@@ -24,6 +24,8 @@ export interface TaskResult {
   metadata?: Record<string, unknown>;
 }
 
+export type RoutingHint = 'claude-browseros' | 'claude-qa' | 'claude-code' | 'eigent';
+
 export interface Task {
   id: string;
   description: string;
@@ -46,6 +48,8 @@ export interface Task {
     apiKey?: string;
   };
   result?: TaskResult;
+  /** Routing hint for task execution - tells ParallelExecutor which specialist to route through */
+  routingHint?: RoutingHint;
 }
 
 export interface TaskEvents {

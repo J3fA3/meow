@@ -1,6 +1,6 @@
 // LLM-based task decomposition
 
-import { Task, TaskPriority } from './Task';
+import { Task, TaskPriority, RoutingHint } from './Task';
 import { Agent } from '../agent/agent';
 
 export interface DecompositionOptions {
@@ -58,6 +58,12 @@ CONTEXT:
 - Existing Skills: ${context.existingSkills?.join(', ') || 'None'}
 - MCP Servers: ${context.mcpServers?.join(', ') || 'None'}
 
+ROUTING HINTS (assign to tasks as needed):
+- "claude-browseros": Use for web automation, QA verification, browser testing, screenshot capture, form filling, web scraping, cross-browser testing, visual regression, UI verification tasks
+- "claude-qa": Use for unit testing, bug hunting, edge case analysis, documentation writing, test coverage analysis
+- "eigent": Use for parallel multi-agent task execution, complex multi-step workflows requiring multiple specialized agents, and workforce-scale coordination
+- "claude-code" (default): Use for code implementation, refactoring, debugging, feature development
+
 CONSTRAINTS:
 - Maximum ${opts.maxSubtasks} subtasks
 - Each subtask must be independently executable
@@ -70,10 +76,11 @@ Output format - JSON array of tasks:
   {
     "description": "Clear description of what this subtask does",
     "priority": "high|medium|low",
+    "routingHint": "claude-browseros|claude-qa|claude-code|eigent",
     "dependencies": [{"taskId": "task-1", "required": true}],
     "requiredFiles": ["file1.ts", "file2.ts"],
     "producedFiles": [{"path": "file3.ts", "operation": "create"}],
-    "reasoning": "Why this is independent/how it relates to other tasks"
+    "reasoning": "Why this is independent/how it relates to other tasks and why this routingHint was chosen"
   }
 ]
 
@@ -99,6 +106,7 @@ JSON OUTPUT ONLY - no markdown, no explanation:`;
           {
             requiredFiles: item.requiredFiles,
             producedFiles: item.producedFiles,
+            routingHint: item.routingHint as RoutingHint | undefined,
           }
         )
       );
@@ -114,6 +122,7 @@ JSON OUTPUT ONLY - no markdown, no explanation:`;
     options?: {
       requiredFiles?: string[];
       producedFiles?: Task['producedFiles'];
+      routingHint?: RoutingHint;
     }
   ): Task {
     return {
@@ -127,6 +136,7 @@ JSON OUTPUT ONLY - no markdown, no explanation:`;
       status: 'pending',
       requiredFiles: options?.requiredFiles,
       producedFiles: options?.producedFiles,
+      routingHint: options?.routingHint,
     };
   }
 

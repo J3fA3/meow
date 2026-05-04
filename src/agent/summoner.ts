@@ -2,7 +2,6 @@ import { execSync, spawn } from "child_process";
 import { MeowKernel } from "../kernel/kernel";
 import { Harvester } from "./harvester";
 import { QuantumMemory } from "./quantum_memory";
-import { BrowserOSManager, getBrowserOSManager } from "./browseros_manager";
 
 export interface SummonContext {
   goal: string;
@@ -308,6 +307,16 @@ export async function summon(agentName: keyof typeof SPECIALISTS, context: Summo
 
   const command = agent.getCommand(context);
 
+  // Detect lotus project target and adjust spawn environment
+  const lotusMatch = context.goal.match(/tmp\/companies\/lotus|~\/meow\/tmp\/companies\/lotus/);
+  const isLotusTarget = !!lotusMatch;
+  const lotusDir = "/Users/jef.adriaenssens/meow/tmp/companies/lotus";
+
+  // Detect mofu-notebook target and route to its directory
+  const mofuMatch = context.goal.match(/mofu-notebook|workspace\/01-projects\/mofu/i);
+  const isMofuTarget = !!mofuMatch;
+  const mofuDir = "/Users/jef.adriaenssens/meow/tmp/companies/mofu-notebook";
+
   try {
     if (agentName === "aider") {
       try {
@@ -334,8 +343,6 @@ export async function summon(agentName: keyof typeof SPECIALISTS, context: Summo
       }
     }
     if (agentName === "claude-hermes") {
-      // Hermes now uses Claude Code as backend - no separate installation needed
-      // Just verify Claude is available
       try {
         execSync("claude --version", { stdio: "ignore" });
       } catch (e) {
@@ -344,15 +351,32 @@ export async function summon(agentName: keyof typeof SPECIALISTS, context: Summo
       }
     }
     if (agentName === "claude-browseros") {
-      // Use BrowserOSManager to check and auto-start if needed
-      const browserOS = getBrowserOSManager();
-      const status = await browserOS.ensureRunning();
-      if (!status.connected || !status.cdpConnected) {
-        throw new Error("BrowserOS not available.");
+      try {
+        // Try browseros-cli first; fall back to MCP server check if not in PATH
+        execSync("browseros-cli status", { stdio: "ignore" });
+      } catch {
+        try {
+          execSync("claude mcp list 2>/dev/null | grep -i browseros", { stdio: "ignore", timeout: 10000 });
+        } catch {
+          console.log("⚠️ BrowserOS not reachable. Ensure MCP server is running or browseros-cli is installed.");
+          throw new Error("BrowserOS MCP not available.");
+        }
       }
-      console.log(`✓ BrowserOS ready at ${status.serverUrl} (CDP: ${status.cdpConnected ? "connected" : "disconnected"})`);
     }
-    execSync(command, { stdio: "inherit", cwd: process.cwd() });
+
+    // Strip ANTHROPIC_API_KEY so child Claude Code uses OAuth credential from ~/.claude/.credentials.json.
+    // The env var (sk-ant-api03-...) was invalidated — OAuth token (sk-ant-oat01-...) still works.
+    // Preserve ANTHROPIC_BASE_URL and other non-Anthropic env vars.
+    const { ANTHROPIC_API_KEY: _unused, ...cleanEnv } = process.env;
+
+    // For lotus targets, spawn specialist in lotus directory with lotus CLAUDE.md context
+    const spawnOpts = isMofuTarget
+      ? { cwd: mofuDir, env: cleanEnv }
+      : isLotusTarget
+      ? { cwd: lotusDir, env: cleanEnv }
+      : { cwd: process.cwd(), env: cleanEnv };
+
+    execSync(command, { stdio: "inherit", ...spawnOpts });
     return `✅ ${agent.name} has completed the mission. MEOW is resuming control and analyzing changes.`;
   } catch (error: any) {
     if (agentName === "aider" || agentName === "opencode") {

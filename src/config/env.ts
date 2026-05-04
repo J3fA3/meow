@@ -1,8 +1,22 @@
-// Environment configuration
+import "dotenv/config";
 
 export const config = {
-  apiKey: process.env.LLM_API_KEY || process.env.ANTHROPIC_API_KEY,
-  baseUrl: process.env.LLM_BASE_URL || process.env.ANTHROPIC_BASE_URL || "http://localhost:11434",
-  model: process.env.ANTHROPIC_MODEL || process.env.MEOW_MODEL || "claude-3-5-sonnet-latest",
-  embeddingDimension: parseInt(process.env.EMBEDDING_DIMENSION || "1536"),
+  // LLM
+  apiKey: process.env.LLM_API_KEY || "",
+  baseUrl: process.env.LLM_BASE_URL || "https://api.anthropic.com",
+  model: process.env.MEOW_MODEL || "claude-3-5-sonnet-latest",
+
+  // Embedding: HuggingFace Inference (primary — free, reliable)
+  hfToken: process.env.HF_INFERENCE_TOKEN || "",
+  hfEmbedModel: process.env.HF_EMBED_MODEL || "BAAI/bge-base-en-v1.5",
+
+  // Embedding: Ollama (local fallback)
+  embedUrl: process.env.OLLAMA_EMBED_URL || "http://localhost:11434/api/embeddings",
+  embedModel: process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text",
+
+  // Embedding: OpenAI (cloud last-resort)
+  openAiEmbedKey: process.env.OPENAI_EMBED_KEY || "",
+
+  // Dimension for validation + truncation
+  embeddingDimension: 768,
 };

@@ -18,6 +18,7 @@ import { QuantumReasoning } from "./quantum_reasoning";
 import { MeowDatabase } from "../kernel/database";
 import { config } from "../config/env";
 import { DatabasePort } from "../extensions/database/manifest";
+import { HfInference } from "@huggingface/inference";
 
 export interface AgentConfig {
   model: string;
@@ -66,6 +67,7 @@ export class Agent {
 
   private L1_TOKEN_LIMIT = 40000; // The Reasoning Sweet Spot
   private currentL1Tokens = 0;
+  private hfClient: HfInference | null = null;
 
   public MONOLITH_BLUEPRINT = `
 1. SINGLE WRITER PHYSICS: All state mutations (DB/Swarm) MUST go through MeowKernel. No direct writes.
@@ -155,7 +157,7 @@ export class Agent {
             // Archive tool result in Quantum Memory for future recall
             await this.quantumMemory.store(
               `Tool [${toolName}] result for query [${userInput}]: ${result.substring(0, 500)}`,
-              this.mockEmbedding(userInput),
+              await this.getEmbedding(userInput),
               { tool: toolName, type: "tool_output" }
             );
 
@@ -451,7 +453,7 @@ ONLY EVER RETURN CODE IN A SEARCH/REPLACE BLOCK!
     const lastUserMessage = this.messages.filter(m => m.role === "user").pop();
     let relevantMemories: MemoryResult[] = [];
     if (lastUserMessage && lastUserMessage.content.trim()) {
-      relevantMemories = await this.quantumMemory.recall(lastUserMessage.content, this.mockEmbedding(lastUserMessage.content));
+      relevantMemories = await this.quantumMemory.recall(lastUserMessage.content, await this.getEmbedding(lastUserMessage.content));
     }
     if (relevantMemories.length > 0) {
       prompt += `\n\n# RECALLED QUANTUM CONTEXT (Associative Knowledge):\n`;
@@ -476,34 +478,92 @@ ONLY EVER RETURN CODE IN A SEARCH/REPLACE BLOCK!
     return prompt;
   }
 
-  /**
-   * Locality Sensitive Hashing (LSH) Proxy for Semantic Search.
-   * Maps similar text to similar vector spaces without a full model.
-   */
-  private mockEmbedding(text: string): number[] {
+  private getHfClient(): HfInference {
+    if (!this.hfClient) {
+      this.hfClient = new HfInference(config.hfToken);
+    }
+    return this.hfClient;
+  }
+
+  private async getEmbedding(text: string): Promise<number[]> {
+    // Tier 1: HuggingFace Inference
+    if (config.hfToken) {
+      try {
+        const hf = this.getHfClient();
+        const rawEmb = await hf.featureExtraction({
+          model: config.hfEmbedModel,
+          inputs: text,
+        });
+        const emb = rawEmb as unknown as number[];
+        if (emb?.length > 0 && typeof emb[0] === "number") {
+          const mag = Math.sqrt(emb.reduce((s, v) => s + v * v, 0));
+          return mag > 0 ? emb.map(v => v / mag) : emb;
+        }
+      } catch (e) {
+        console.warn("⚠️ HF embedding failed:", (e as Error)?.message?.split("\n")[0]);
+      }
+    }
+
+    // Tier 2: Ollama (local fallback)
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const response = await fetch(config.embedUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: config.embedModel, prompt: text }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!response.ok) throw new Error(`Ollama ${response.status}`);
+      const data = await response.json() as { embedding: number[] };
+      if (data.embedding?.length === config.embeddingDimension) {
+        return data.embedding;
+      }
+    } catch (e) {
+      console.warn("⚠️ Ollama embedding failed:", (e as Error)?.message?.split("\n")[0]);
+    }
+
+    // Tier 3: OpenAI text-embedding-3-small (1536-dim → truncate to 768)
+    if (config.openAiEmbedKey) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        const response = await fetch("https://api.openai.com/v1/embeddings", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${config.openAiEmbedKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "text-embedding-3-small", input: text }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!response.ok) throw new Error(`OpenAI ${response.status}`);
+        const data = await response.json() as { data: Array<{ embedding: number[] }> };
+        if (data.data?.[0]?.embedding?.length > 0) {
+          return data.data[0].embedding.slice(0, config.embeddingDimension);
+        }
+      } catch (e) {
+        console.warn("⚠️ OpenAI embedding failed:", (e as Error)?.message?.split("\n")[0]);
+      }
+    }
+    // Tier 4: Hash fallback
+    return this.hashEmbeddingFallback(text);
+  }
+
+  private hashEmbeddingFallback(text: string): number[] {
     const dim = config.embeddingDimension;
     const arr = new Array(dim).fill(0);
     const words = text.toLowerCase().split(/\W+/);
-    
     words.forEach(word => {
       if (!word) return;
-      // Create a stable hash for each word
       let hash = 0;
       for (let i = 0; i < word.length; i++) {
         hash = (hash << 5) - hash + word.charCodeAt(i);
-        hash |= 0; 
+        hash |= 0;
       }
-      // Distribute hash into the vector
       const idx = Math.abs(hash) % dim;
       arr[idx] += 1;
     });
-
-    // Ensure non-zero magnitude (Quantum Noise Floor)
-    if (arr.every(v => v === 0)) {
-      arr[0] = 0.0001; 
-    }
-
-    // Normalize
+    if (arr.every(v => v === 0)) arr[0] = 0.0001;
     const magnitude = Math.sqrt(arr.reduce((sum, val) => sum + val * val, 0)) || 1;
     return arr.map(v => v / magnitude);
   }
@@ -791,7 +851,7 @@ ONLY EVER RETURN CODE IN A SEARCH/REPLACE BLOCK!
     // Archive raw content and summary into L3
     await this.quantumMemory.store(
       `CONTEXT_ANCHOR: ${summary}`,
-      this.mockEmbedding(summary),
+      await this.getEmbedding(summary),
       { type: "archived_context", original_length: rawContent.length }
     );
 
